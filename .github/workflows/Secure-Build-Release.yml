@@ -17,16 +17,28 @@ jobs:
   secure-build:
     runs-on: ubuntu-latest
     strategy:
-      # 防止某一个架构构建失败导致其他架构被强行终止
       fail-fast: false 
       matrix:
         include:
+          # 1. 针对常规云服务器 (Debian/Ubuntu 等)，使用默认 glibc 加载器
           - goos: linux
             goarch: amd64
-            friendlyName: linux-x86-64
+            friendlyName: linux-x86-64-standard
+            patchMusl: false
+
+          # 2. 针对 x86 软路由 (OpenWrt)，必须执行 patchelf 替换为 musl x86 加载器
+          - goos: linux
+            goarch: amd64
+            friendlyName: linux-x86-64-openwrt
+            patchMusl: true
+            interpreter: /lib/ld-musl-x86_64.so.1
+            
+          # 3. 针对 ARM 软路由 (OpenWrt)，必须执行 patchelf 替换为 musl arm64 加载器
           - goos: linux
             goarch: arm64
-            friendlyName: linux-arm64-v8a
+            friendlyName: linux-arm64-v8a-openwrt
+            patchMusl: true
+            interpreter: /lib/ld-musl-aarch64.so.1
     
     env:
       GOOS: ${{ matrix.goos }}
@@ -61,17 +73,15 @@ jobs:
             -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" \
             -v ./main
 
-      - name: Magic Patch for OpenWrt (ARM64)
-        if: matrix.goarch == 'arm64'
+      - name: Magic Patch for OpenWrt (musl compatibility)
+        # 只有矩阵参数 patchMusl 为 true 时才执行手术
+        if: matrix.patchMusl
         run: |
-          echo "Patching ELF Interpreter for OpenWrt compatibility..."
-          # 第二步：专门为 ARM64 安装修补工具
+          echo "Patching ELF Interpreter for OpenWrt (${{ matrix.friendlyName }})..."
           sudo apt-get update && sudo apt-get install -y patchelf
-          
-          # 第三步：无损替换加载器路径（此处修改后，千万不能再 go build 覆盖它）
-          patchelf --set-interpreter /lib/ld-musl-aarch64.so.1 build_assets/xray
-          echo "Patch complete. ASLR memory protection is now active for OpenWrt."
-
+          # 根据矩阵自动注入正确的 musl 加载器路径
+          patchelf --set-interpreter ${{ matrix.interpreter }} build_assets/xray
+          echo "Patch complete. ASLR memory protection active for musl environment."
       - name: Download Geo Assets (IP & Site Databases)
         run: |
           echo "Downloading latest geoip and geosite data for standalone usage..."
