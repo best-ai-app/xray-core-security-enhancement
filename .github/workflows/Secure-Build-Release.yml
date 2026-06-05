@@ -51,10 +51,9 @@ jobs:
           mkdir -p build_assets
           COMMID=$(git describe --always --dirty 2>/dev/null || echo "unknown")
 
-
           echo "Building Xray for $GOOS/$GOARCH with full PIE..."
           
-          # 不再妥协！x86-64 和 ARM64 统统开启 -buildmode=pie
+          # 第一步：统一进行安全特性拉满的编译（生成初始 PIE 文件）
           go build -o build_assets/xray \
             -trimpath \
             -buildmode=pie \
@@ -66,22 +65,12 @@ jobs:
         if: matrix.goarch == 'arm64'
         run: |
           echo "Patching ELF Interpreter for OpenWrt compatibility..."
-          # 安装 ELF 头修补工具
+          # 第二步：专门为 ARM64 安装修补工具
           sudo apt-get update && sudo apt-get install -y patchelf
           
-          # 将写死的 glibc 加载器无损替换为 OpenWrt 专属的 musl 加载器
+          # 第三步：无损替换加载器路径（此处修改后，千万不能再 go build 覆盖它）
           patchelf --set-interpreter /lib/ld-musl-aarch64.so.1 build_assets/xray
           echo "Patch complete. ASLR memory protection is now active for OpenWrt."
-          
-          echo "Building Xray for $GOOS/$GOARCH with max security features..."
-          
-          # 安全特性拉满：PIE机制 + 纯净依赖隔离 + 逆向指纹抹除
-          go build -o build_assets/xray \
-            -trimpath \
-            -buildmode=pie \
-            -tags "netgo,osusergo" \
-            -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" \
-            -v ./main
 
       - name: Download Geo Assets (IP & Site Databases)
         run: |
@@ -109,7 +98,6 @@ jobs:
           done
 
       - name: Determine Release Tag and Name
-        # 这个步骤智能判断：如果是官方发布，则使用官方Tag；如果是Push或手动触发，则自动生成唯一标识Tag
         id: release_info
         run: |
           if [ "${{ github.event_name }}" == "release" ]; then
@@ -117,7 +105,6 @@ jobs:
             echo "RELEASE_NAME=${{ github.event.release.name }}" >> $GITHUB_ENV
             echo "IS_PRERELEASE=false" >> $GITHUB_ENV
           else
-            # 使用 Commit 的前7位短哈希作为标识，保证 x86 和 arm64 矩阵任务产生绝对一致的 Tag 名字，以便合并到一个页面
             SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
             echo "TAG_NAME=autobuild-${SHORT_SHA}" >> $GITHUB_ENV
             echo "RELEASE_NAME=Automated Build (${SHORT_SHA})" >> $GITHUB_ENV
@@ -125,7 +112,6 @@ jobs:
           fi
 
       - name: Publish to Github Releases (Public Download)
-        # 不再受限于 if: github.event_name == 'release'，每次构建都将推送至 Release 页面
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
