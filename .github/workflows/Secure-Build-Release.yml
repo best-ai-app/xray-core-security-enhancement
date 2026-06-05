@@ -123,12 +123,26 @@ jobs:
             echo "IS_PRERELEASE=true" >> $GITHUB_ENV
           fi
 
-      - name: Publish to Github Releases (Public Download)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: ${{ env.RELEASE_NAME }}
-          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
-          files: |
-            ./Xray-${{ matrix.friendlyName }}.zip
-            ./Xray-${{ matrix.friendlyName }}.zip.dgst
+      - name: Publish to Github Releases via Native CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Publishing assets to Release: ${{ env.TAG_NAME }}"
+          
+          # 1. 动态判断是否为预发布版本
+          PRERELEASE_FLAG=""
+          if [ "${{ env.IS_PRERELEASE }}" == "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          
+          # 2. 并发安全地创建 Release 页面
+          # 因为 x86 和 arm64 矩阵是并行执行的，使用 || true 确保即使其他架构已经抢先创建了页面，这里也不会报错中断
+          gh release create "${{ env.TAG_NAME }}" --title "${{ env.RELEASE_NAME }}" $PRERELEASE_FLAG || true
+          
+          # 3. 强力上传当前架构的二进制压缩包和哈希文件
+          # --clobber 允许覆盖，防止极小概率的网络重试冲突
+          gh release upload "${{ env.TAG_NAME }}" \
+            ./Xray-${{ matrix.friendlyName }}.zip \
+            ./Xray-${{ matrix.friendlyName }}.zip.dgst \
+            --clobber
+    
