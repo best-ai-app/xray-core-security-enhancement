@@ -12,7 +12,9 @@ on:
 # 关键：必须赋予 Action 写入权限，否则无法免密自动创建 Release 页面
 permissions:
   contents: write
-
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  
 jobs:
   secure-build:
     runs-on: ubuntu-latest
@@ -47,10 +49,10 @@ jobs:
 
     steps:
       - name: Checkout codebase
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           check-latest: true
