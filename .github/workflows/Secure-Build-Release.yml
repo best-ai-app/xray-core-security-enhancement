@@ -9,10 +9,16 @@ on:
     paths-ignore:
       - '**.md'
 
+# 关键：必须赋予 Action 写入权限，否则无法免密自动创建 Release 页面
+permissions:
+  contents: write
+
 jobs:
   secure-build:
     runs-on: ubuntu-latest
     strategy:
+      # 防止某一个架构构建失败导致其他架构被强行终止
+      fail-fast: false 
       matrix:
         include:
           - goos: linux
@@ -47,13 +53,7 @@ jobs:
           
           echo "Building Xray for $GOOS/$GOARCH with max security features..."
           
-          # 安全特性拉满的核心编译指令：
-          # 1. -trimpath          : 抹除本地路径信息，防源码路径泄漏
-          # 2. -buildmode=pie     : 启用 PIE，配合操作系统的 ASLR 防御 ROP 攻击
-          # 3. -tags netgo...     : 强制纯净 Go 依赖，防 libc 投毒和劫持，完美适配 OpenWrt
-          # 4. -ldflags "-s -w"   : 剥离符号表和调试信息，增加反编译与逆向难度
-          # 5. -ldflags "-buildid=": 移除构建环境指纹，防环境溯源关联
-          
+          # 安全特性拉满：PIE机制 + 纯净依赖隔离 + 逆向指纹抹除
           go build -o build_assets/xray \
             -trimpath \
             -buildmode=pie \
@@ -76,27 +76,39 @@ jobs:
         shell: bash
         run: |
           pushd build_assets || exit 1
-          # 将所有文件的时间戳抹平，确保每一次构建输出相同源码的 ZIP 哈希一致（防指纹溯源）
+          # 时间戳对齐，确保每次相同源码打出的 ZIP Hash 防护一致
           touch -mt $(date +%Y01010000) *
           zip -9vr ../Xray-${{ matrix.friendlyName }}.zip .
           popd || exit 1
           
-          # 生成所有安全特征值
           FILE=./Xray-${{ matrix.friendlyName }}.zip
           for METHOD in {"md5","sha1","sha256","sha512"}; do
             openssl dgst -$METHOD $FILE | sed 's/([^)]*)//g' >>$FILE.dgst
           done
 
-      - name: Upload binaries to Github Release
-        if: github.event_name == 'release'
+      - name: Determine Release Tag and Name
+        # 这个步骤智能判断：如果是官方发布，则使用官方Tag；如果是Push或手动触发，则自动生成唯一标识Tag
+        id: release_info
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            echo "TAG_NAME=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+            echo "RELEASE_NAME=${{ github.event.release.name }}" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          else
+            # 使用 Commit 的前7位短哈希作为标识，保证 x86 和 arm64 矩阵任务产生绝对一致的 Tag 名字，以便合并到一个页面
+            SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+            echo "TAG_NAME=autobuild-${SHORT_SHA}" >> $GITHUB_ENV
+            echo "RELEASE_NAME=Automated Build (${SHORT_SHA})" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          fi
+
+      - name: Publish to Github Releases (Public Download)
+        # 不再受限于 if: github.event_name == 'release'，每次构建都将推送至 Release 页面
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
           files: |
             ./Xray-${{ matrix.friendlyName }}.zip
             ./Xray-${{ matrix.friendlyName }}.zip.dgst
-
-      - name: Upload binaries to Artifacts (for Push/PR checks)
-        uses: actions/upload-artifact@v4
-        with:
-          name: Xray-${{ matrix.friendlyName }}-Artifact
-          path: ./build_assets/*
