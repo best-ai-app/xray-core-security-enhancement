@@ -50,6 +50,28 @@ jobs:
         run: |
           mkdir -p build_assets
           COMMID=$(git describe --always --dirty 2>/dev/null || echo "unknown")
+
+
+          echo "Building Xray for $GOOS/$GOARCH with full PIE..."
+          
+          # 不再妥协！x86-64 和 ARM64 统统开启 -buildmode=pie
+          go build -o build_assets/xray \
+            -trimpath \
+            -buildmode=pie \
+            -tags "netgo,osusergo" \
+            -ldflags="-X github.com/xtls/xray-core/core.build=${COMMID} -s -w -buildid=" \
+            -v ./main
+
+      - name: Magic Patch for OpenWrt (ARM64)
+        if: matrix.goarch == 'arm64'
+        run: |
+          echo "Patching ELF Interpreter for OpenWrt compatibility..."
+          # 安装 ELF 头修补工具
+          sudo apt-get update && sudo apt-get install -y patchelf
+          
+          # 将写死的 glibc 加载器无损替换为 OpenWrt 专属的 musl 加载器
+          patchelf --set-interpreter /lib/ld-musl-aarch64.so.1 build_assets/xray
+          echo "Patch complete. ASLR memory protection is now active for OpenWrt."
           
           echo "Building Xray for $GOOS/$GOARCH with max security features..."
           
